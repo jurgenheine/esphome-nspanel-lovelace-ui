@@ -1,6 +1,10 @@
 #pragma once
 
 #include <utility>
+#include <deque>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "esphome/core/defines.h"
 #ifdef USE_API
@@ -78,6 +82,10 @@ class NSPanelLovelace : public Component, public uart::UARTDevice {
 
   bool process_data_();
   void process_command_(const std::string &message);
+  void enqueue_command_(const StringRef &command);
+  void write_custom_command_(const StringRef &command);
+  void process_send_queue_();
+
 #ifdef USE_MQTT
   std::string replace_topic_suffix_(const std::string &topic, const std::string &suffix) const;
 #endif
@@ -92,6 +100,9 @@ class NSPanelLovelace : public Component, public uart::UARTDevice {
   unsigned int berry_driver_version_;
   bool use_missed_updates_workaround_ = true;
   unsigned int update_baud_rate_;
+  std::deque<std::string> send_queue_;
+  uint32_t last_send_time_{0};
+  uint32_t next_send_delay_{0};
 
   CallbackManager<void(std::string)> incoming_msg_callback_;
   CallbackManager<void()> before_tft_upload_callback_;

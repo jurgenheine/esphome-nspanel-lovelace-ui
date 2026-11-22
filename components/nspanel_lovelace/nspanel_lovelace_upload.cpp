@@ -212,7 +212,7 @@ void NSPanelLovelace::upload_tft(const std::string &url) {
   }
 
   this->is_updating_ = true;
-
+  this->send_queue_.clear();
   // Unsubscribe in MQTT mode so incoming messages don't consume heap needed by the upload.
   // The device restarts when the upload ends, so subscriptions are never restored.
 #ifdef USE_MQTT

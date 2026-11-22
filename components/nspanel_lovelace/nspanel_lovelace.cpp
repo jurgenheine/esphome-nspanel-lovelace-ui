@@ -25,8 +25,6 @@ void NSPanelLovelace::setup() {
   if (!this->use_api_) {
     this->mqtt_->subscribe(this->send_topic_, [this](const std::string &topic, const std::string &payload) {
       this->send_custom_command(payload);
-      // workaround for https://github.com/sairon/esphome-nspanel-lovelace-ui/issues/8
-      if (this->use_missed_updates_workaround_) delay(75);
     });
 
     if (this->berry_driver_version_ > 0) {
@@ -80,7 +78,6 @@ void NSPanelLovelace::nspanelui_api_call(const StringRef &data, int32_t command)
     }
     default:
       this->send_custom_command(data);
-      if (this->use_missed_updates_workaround_) delay(75);
       break;
   }
 }
@@ -91,7 +88,6 @@ void NSPanelLovelace::loop() {
   }
 
   uint8_t d;
-
   while (this->available()) {
     this->read_byte(&d);
     this->buffer_.push_back(d);
@@ -100,6 +96,8 @@ void NSPanelLovelace::loop() {
       this->buffer_.clear();
     }
   }
+
+  this->process_send_queue_();
 }
 
 bool NSPanelLovelace::process_data_() {
@@ -201,6 +199,58 @@ void NSPanelLovelace::send_custom_command(const StringRef &command) {
   if (this->is_updating_)
     return; // don't execute custom commands - UI updates could spoil the upload
 
+  if (!this->use_missed_updates_workaround_) {
+    this->write_custom_command_(command);
+    return;
+  }
+
+  this->enqueue_command_(command);
+}
+
+void NSPanelLovelace::enqueue_command_(const StringRef &command) {
+  // Overwrite stale state updates if an older one with the same prefix is still queued
+  static const char *const COALESCE_PREFIXES[] = {"weatherUpdate~", "time~", "statusUpdate~"};
+  for (const char *prefix : COALESCE_PREFIXES) {
+    size_t prefix_len = strlen(prefix);
+    if (command.size() >= prefix_len && memcmp(command.c_str(), prefix, prefix_len) == 0) {
+      for (auto &queued : this->send_queue_) {
+        if (queued.compare(0, prefix_len, prefix) == 0) {
+          queued.assign(command.c_str(), command.size());  // Reuses existing string buffer capacity
+          return;
+        }
+      }
+      break;
+    }
+  }
+
+  if (this->send_queue_.size() >= 20) {
+    ESP_LOGW(TAG, "Send queue full, dropping oldest command");
+    this->send_queue_.pop_front();
+  }
+  this->send_queue_.emplace_back(command.c_str(), command.size());
+}
+
+void NSPanelLovelace::process_send_queue_() {
+  if (this->send_queue_.empty()) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if (now - this->last_send_time_ < this->next_send_delay_) {
+    return;
+  }
+
+  std::string command = std::move(this->send_queue_.front());
+  this->send_queue_.pop_front();
+
+  this->write_custom_command_(StringRef(command));
+
+  this->last_send_time_ = now;
+  // Give Nextion 75 ms for standard commands, or 110 ms for large payloads (>250 bytes, e.g. weatherUpdate)
+  this->next_send_delay_ = (command.size() > 250) ? 110 : 75;
+}
+
+void NSPanelLovelace::write_custom_command_(const StringRef &command) {
   ESP_LOGD(TAG, "Sending custom command: %s", command.c_str());
   std::vector<uint8_t> data = {0x55, 0xBB};
   data.push_back(command.length() & 0xFF);
